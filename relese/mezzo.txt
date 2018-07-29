@@ -1,0 +1,93 @@
+#!/usr/bin/env ruby
+
+require 'open3'
+
+ENV.sort.each { |e| STDERR.puts "ENV #{e.inspect}" }
+
+if !ENV.has_key?('DESTINATION_STACK') || ENV['DESTINATION_STACK'].nil? || ENV['DESTINATION_STACK'].empty?
+	STDERR.puts "Description: #{ENV['ORIGINAL_BUILD_NUMBER']} -> NO DESTINATION"
+    exit 1
+end
+
+throw "Original Build not set" if !ENV.has_key?('ORIGINAL_BUILD_NUMBER') || ENV['ORIGINAL_BUILD_NUMBER'].nil? || ENV['ORIGINAL_BUILD_NUMBER'].empty?
+
+STDERR.puts "Description: #{ENV['ORIGINAL_BUILD_NUMBER']} -> #{ENV['DESTINATION_STACK']}"
+
+verprop = Hash[*File.read('version_info.properties').split(/[, =\n]+/)]
+#puts verprop.inspect
+maj_number='MEZZO_VERSION_MAJOR'
+min_number='MEZZO_VERSION_MINOR'
+patch_number='MEZZO_VERSION_PATCH'
+release_version_number='RELEASE_VERSION_NUMBER'
+version_number='GENERATED_VERSION_NUMBER'
+build_number='GENERATED_BUILD_NUMBER'
+tag_suffix='GENERATED_TAG_SUFFIX'
+rel_level='GENERATED_REL_LEVEL'
+
+static_mezzo_version="#{verprop[maj_number]}.#{verprop[min_number]}.#{verprop[patch_number]}"
+
+
+# The full list of types AND their port assignments:
+# "billing,phone,profile,plan,shop,usage"
+typecheck={
+	"billing"=>"8086",
+	"phone"=>"8084",
+	"plan"=>"8081",
+	"profile"=>"8083",
+	"shop"=>"8087",
+	"usage"=>"8082"
+}
+
+servicetypes=[ ]
+
+typecheck.each {|k,v| if ENV["MEZZO_TYPE_CHOICE"].include? (k)
+servicetypes << [k,v]
+end
+}
+
+# puts servicetypes.inspect
+
+for t in servicetypes 
+  thisType=t[0]
+  port=t[1]
+ansible_call = <<END_OF_STRING1
+  ansible-playbook -i \
+   #{ENV['TMO_CONFIG_PATH']}/update_stack/inventories/mytmo_mezzo_combined.inv \
+   #{ENV['TMO_CONFIG_PATH']}/playbooks/deploy_mezzo.yml \
+   -l "#{ENV['DESTINATION_STACK']}" \
+   --become -e \
+   "\
+   ansible_become_pass=#{ENV['JENKINS_PASS']} \
+   ansible_ssh_pass=#{ENV['JENKINS_PASS']} \
+   ansible_user=#{ENV['JENKINS_RUN_USER']} \
+   mezzo_artifact=webservice-#{thisType} \
+   mezzo_port=#{port} \
+   mezzo_user=mezzo \
+   mezzo_service=yes \
+   mezzo_mode=#{ENV['BACKEND']} \
+   mezzo_type=#{thisType} \
+   mezzo_is_debug=0 \
+   mezzo_debug_level=DEBUG  \
+   mezzo_deployment_version=#{static_mezzo_version}#{verprop[rel_level]} \
+   mezzo_build_number=#{verprop[build_number]} \
+   mezzo_version=#{static_mezzo_version}  \
+   mezzo_version_number=#{verprop[version_number]} \
+   mezzo_rel_level=#{verprop[rel_level]} \
+   mezzo_build_workspace_source=#{ENV['WORKSPACE']} "\
+   -u #{ENV['JENKINS_RUN_USER']} \
+   -v
+END_OF_STRING1
+  
+  STDERR.puts "Ansible call:\n#{ansible_call}\n"
+
+  ansible_resp, status = Open3.capture2e(ansible_call)
+
+	if status.exitstatus != 0
+		STDERR.puts "\nFAILED - Status: #{status.inspect}\nResponse: \n#{ansible_resp.inspect}\n"
+		throw "Command failed"
+	else
+		STDOUT.puts "Ansible response:\n#{ansible_resp.inspect}\n"
+	end
+end
+
+exit 0
